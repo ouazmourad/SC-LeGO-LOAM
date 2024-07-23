@@ -40,7 +40,7 @@
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/Values.h>
-
+#include <rosbag/bag.h>
 #include <gtsam/nonlinear/ISAM2.h>
 
 #include "Scancontext.h"
@@ -80,7 +80,7 @@ private:
     ros::Subscriber subOutlierCloudLast;
     ros::Subscriber subLaserOdometry;
     ros::Subscriber subImu;
-
+    
     nav_msgs::Odometry odomAftMapped;
     tf::StampedTransform aftMappedTrans;
     tf::TransformBroadcaster tfBroadcaster;
@@ -203,7 +203,7 @@ private:
     cv::Mat matA0;
     cv::Mat matB0;
     cv::Mat matX0;
-
+    
     cv::Mat matA1;
     cv::Mat matD1;
     cv::Mat matV1;
@@ -677,7 +677,7 @@ public:
         imuPitch[imuPointerLast] = pitch;
     }
 
-    void publishTF(){
+    void publishTF(const rosbag::Bag bag_out){
 
         geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw
                                   (transformAftMapped[2], -transformAftMapped[0], -transformAftMapped[1]);
@@ -696,12 +696,14 @@ public:
         odomAftMapped.twist.twist.linear.x = transformBefMapped[3];
         odomAftMapped.twist.twist.linear.y = transformBefMapped[4];
         odomAftMapped.twist.twist.linear.z = transformBefMapped[5];
-        pubOdomAftMapped.publish(odomAftMapped);
-
+        
         aftMappedTrans.stamp_ = ros::Time().fromSec(timeLaserOdometry);
+        bag_out.write("/legoloam_odometry",aftMappedTrans.stamp_,odomAftMapped);
+        pubOdomAftMapped.publish(odomAftMapped);
         aftMappedTrans.setRotation(tf::Quaternion(-geoQuat.y, -geoQuat.z, geoQuat.x, geoQuat.w));
         aftMappedTrans.setOrigin(tf::Vector3(transformAftMapped[3], transformAftMapped[4], transformAftMapped[5]));
         tfBroadcaster.sendTransform(aftMappedTrans);
+        
     }
 
     PointTypePose trans2PointTypePose(float transformIn[]){
@@ -747,13 +749,23 @@ public:
         } 
     }
 
-    void visualizeGlobalMapThread(){
-        ros::Rate rate(0.2);
-        while (ros::ok()){
-            rate.sleep();
-            publishGlobalMap();
-        }
-        // save final point cloud
+    void write_pointcloud(){
+
+        double tf_roll = 1.570795;
+        double tf_pitch = 0.0;
+        double tf_yaw = 1.570795;
+
+        Eigen::Translation3f tf_t(0.0, 0.0, 0.0);         // tl: translation
+        Eigen::AngleAxisf rot_x(tf_roll, Eigen::Vector3f::UnitX());    // rot: rotation
+        Eigen::AngleAxisf rot_y(tf_pitch, Eigen::Vector3f::UnitY());
+        Eigen::AngleAxisf rot_z(tf_yaw, Eigen::Vector3f::UnitZ());
+        Eigen::Matrix4f map_to_init_trans_matrix = (tf_t * rot_z * rot_y * rot_x).matrix();
+
+        pcl::PointCloud<PointType>::Ptr transformed_pc_ptr(new pcl::PointCloud<PointType>());
+
+        pcl::transformPointCloud(*globalMapKeyFramesDS, *transformed_pc_ptr, map_to_init_trans_matrix);
+
+        pcl::io::savePCDFileASCII(fileDirectory+"TransformedCloud.pcd", *transformed_pc_ptr);
         pcl::io::savePCDFileASCII(fileDirectory+"finalCloud.pcd", *globalMapKeyFramesDS);
 
         string cornerMapString = "/tmp/cornerMap.pcd";
@@ -767,8 +779,8 @@ public:
         
         for(int i = 0; i < cornerCloudKeyFrames.size(); i++) {
             *cornerMapCloud  += *transformPointCloud(cornerCloudKeyFrames[i],   &cloudKeyPoses6D->points[i]);
-    	    *surfaceMapCloud += *transformPointCloud(surfCloudKeyFrames[i],     &cloudKeyPoses6D->points[i]);
-    	    *surfaceMapCloud += *transformPointCloud(outlierCloudKeyFrames[i],  &cloudKeyPoses6D->points[i]);
+            *surfaceMapCloud += *transformPointCloud(surfCloudKeyFrames[i],     &cloudKeyPoses6D->points[i]);
+            *surfaceMapCloud += *transformPointCloud(outlierCloudKeyFrames[i],  &cloudKeyPoses6D->points[i]);
         }
 
         downSizeFilterCorner.setInputCloud(cornerMapCloud);
@@ -776,9 +788,23 @@ public:
         downSizeFilterSurf.setInputCloud(surfaceMapCloud);
         downSizeFilterSurf.filter(*surfaceMapCloudDS);
 
+        pcl::io::savePCDFileASCII(fileDirectory+"pointsMap.pcd", *surfaceMapCloud);
         pcl::io::savePCDFileASCII(fileDirectory+"cornerMap.pcd", *cornerMapCloudDS);
         pcl::io::savePCDFileASCII(fileDirectory+"surfaceMap.pcd", *surfaceMapCloudDS);
         pcl::io::savePCDFileASCII(fileDirectory+"trajectory.pcd", *cloudKeyPoses3D);
+    }
+
+
+    void visualizeGlobalMapThread(){
+        ros::Rate rate(0.2);
+
+        while (ros::ok()){
+            rate.sleep();
+            publishGlobalMap();
+        }
+        // save final point cloud
+        write_pointcloud();
+
     }
 
     void publishGlobalMap(){
@@ -1670,6 +1696,7 @@ public:
         laserCloudSurfFromMapDS->clear();   
     }
 
+
     void run(){
 
         if (newLaserCloudCornerLast  && std::abs(timeLaserCloudCornerLast  - timeLaserOdometry) < 0.005 &&
@@ -1698,7 +1725,7 @@ public:
 
                 correctPoses();
 
-                publishTF();
+                publishTF(const bag_out);
 
                 publishKeyPosesAndFrames();
 
@@ -1720,9 +1747,10 @@ int main(int argc, char** argv)
     std::thread loopthread(&mapOptimization::loopClosureThread, &MO);
     std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO);
 
+
     ros::Rate rate(200);
     while (ros::ok())
-    // while ( 1 )
+
     {
         ros::spinOnce();
 
@@ -1733,6 +1761,5 @@ int main(int argc, char** argv)
 
     loopthread.join();
     visualizeMapThread.join();
-
     return 0;
 }

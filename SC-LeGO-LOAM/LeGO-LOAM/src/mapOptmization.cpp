@@ -50,7 +50,7 @@ using namespace gtsam;
 
 class mapOptimization{
 
-private:
+public:
 
     NonlinearFactorGraph gtSAMgraph;
     Values initialEstimate;
@@ -93,6 +93,7 @@ private:
     deque<pcl::PointCloud<PointType>::Ptr> recentSurfCloudKeyFrames;
     deque<pcl::PointCloud<PointType>::Ptr> recentOutlierCloudKeyFrames;
     int latestFrameID;
+    rosbag::Bag bag_out;
 
     vector<int> surroundingExistingKeyPosesID;
     deque<pcl::PointCloud<PointType>::Ptr> surroundingCornerCloudKeyFrames;
@@ -253,7 +254,7 @@ public:
         subOutlierCloudLast = nh.subscribe<sensor_msgs::PointCloud2>("/outlier_cloud_last", 2, &mapOptimization::laserCloudOutlierLastHandler, this);
         subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/laser_odom_to_init", 5, &mapOptimization::laserOdometryHandler, this);
         subImu = nh.subscribe<sensor_msgs::Imu> (imuTopic, 50, &mapOptimization::imuHandler, this);
-
+        
         pubHistoryKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/history_cloud", 2);
         pubIcpKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/corrected_cloud", 2);
         pubRecentKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/recent_cloud", 2);
@@ -276,7 +277,8 @@ public:
 
         aftMappedTrans.frame_id_ = "/camera_init";
         aftMappedTrans.child_frame_id_ = "/aft_mapped";
-
+        std::string out_bag_name = "/tmp/legoloam_odometry.bag";
+        bag_out.open(out_bag_name, rosbag::bagmode::Write);
         allocateMemory();
     }
 
@@ -677,7 +679,7 @@ public:
         imuPitch[imuPointerLast] = pitch;
     }
 
-    void publishTF(const rosbag::Bag bag_out){
+    void publishTF(){
 
         geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw
                                   (transformAftMapped[2], -transformAftMapped[0], -transformAftMapped[1]);
@@ -1725,7 +1727,7 @@ public:
 
                 correctPoses();
 
-                publishTF(const bag_out);
+                publishTF();
 
                 publishKeyPosesAndFrames();
 

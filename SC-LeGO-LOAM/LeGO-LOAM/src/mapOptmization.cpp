@@ -1698,7 +1698,6 @@ public:
         laserCloudSurfFromMapDS->clear();   
     }
 
-
     void run(){
 
         if (newLaserCloudCornerLast  && std::abs(timeLaserCloudCornerLast  - timeLaserOdometry) < 0.005 &&
